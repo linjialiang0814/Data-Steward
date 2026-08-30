@@ -1,0 +1,64 @@
+# Flutter / Dart
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+build/
+dist/
+.tmp/
+**/doc/api/
+**/ios/Flutter/.last_build_id
+*.iml
+*.ipr
+*.iws
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Android / build artifacts
+**/android/.gradle/
+**/android/captures/
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/**/GeneratedPluginRegistrant.kt
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+
+# Windows build outputs (keep Flutter Windows runner source)
+apps/**/build/windows/
+
+# Secrets / local env
+.env
+.env.*
+*.jks
+*.keystore
+**/key.properties
+
+# Coverage / logs
+coverage/
+*.log
+
+# Python Hub local artifacts
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.db
+*.sqlite
+*.sqlite3
+
+# Data Steward user-owned generated artifacts
+**/Data Steward 输出/

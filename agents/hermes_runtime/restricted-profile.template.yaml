@@ -1,0 +1,49 @@
+# P0-S3-A contract template. Runtime paths and secrets are supplied through
+# an isolated process environment and are never committed.
+model: ""
+platform_toolsets:
+  api_server:
+    - data_steward
+agent:
+  max_turns: 8
+  gateway_timeout: 30
+  parallel_tool_call_guidance: false
+  disabled_toolsets:
+    - browser
+    - code_execution
+    - computer_use
+    - cronjob
+    - delegation
+    - file
+    - image_gen
+    - memory
+    - project
+    - session_search
+    - skills
+    - terminal
+    - todo
+    - tts
+    - video
+    - video_gen
+    - vision
+    - web
+    - x_search
+context:
+  engine: compressor
+mcp_servers:
+  data_steward:
+    enabled: true
+    supports_parallel_tool_calls: false
+    command: "${DATA_STEWARD_HERMES_PYTHON}"
+    args:
+      - "${DATA_STEWARD_GATE_MCP_SERVER}"
+    connect_timeout: 5
+    timeout: 10
+    tools:
+      include:
+        - inspect_authorized_scope
+        - search_authorized_assets
+        - propose_archive_plan
+        - recall_approved_preferences
+      prompts: false
+      resources: false

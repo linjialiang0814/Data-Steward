@@ -1,0 +1,3 @@
+# P0-S3-A locked Framework Gate candidate. Do not use an unpinned range.
+hermes-agent[mcp]==0.18.2
+aiohttp==3.14.1

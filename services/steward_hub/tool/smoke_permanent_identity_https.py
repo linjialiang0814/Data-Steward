@@ -1,0 +1,359 @@
+"""Permanent identity + temporary SQLite HTTPS smoke (B2B-B2).
+
+Uses Known Folder permanent TLS identity. Database lives only under TEMP.
+Never modifies permanent identity or creates rotation candidates.
+"""
+
+from __future__ import annotations
+
+import base64
+import gc
+import hashlib
+import json
+import os
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+_HUB = Path(__file__).resolve().parents[1]
+_SRC = _HUB / "src"
+_TESTS = _HUB / "tests"
+for path in (_SRC, _TESTS):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+from steward_hub.https_runtime import (  # noqa: E402
+    allocate_loopback_port,
+    validate_loopback_bind_host,
+)
+from steward_hub.pairing_store_executor import (  # noqa: E402
+    list_alive_pairing_worker_threads,
+)
+from steward_hub.pin_client import PinFirstHttpsClient  # noqa: E402
+from steward_hub.tls_identity import (  # noqa: E402
+    audit_permanent_identity_tree,
+    load_tls_identity,
+    permanent_identity_root,
+)
+from steward_hub.tls_identity.provisioner import (  # noqa: E402
+    OWNER_FILENAME,
+    count_transient_siblings,
+)
+
+PROTOCOL = "pairing_auth/1"
+ATTEMPT = "01ARZ3NDEKTSV4RRFFQ69G5FAX"
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _rmtree_strict(path: Path, *, attempts: int = 80, delay_s: float = 0.05) -> bool:
+    gc.collect()
+    for _ in range(attempts):
+        if not path.exists():
+            return True
+        try:
+            shutil.rmtree(path, ignore_errors=False)
+        except OSError:
+            time.sleep(delay_s)
+            gc.collect()
+            continue
+        if not path.exists():
+            return True
+        time.sleep(delay_s)
+    return not path.exists()
+
+
+def _wait_port(port: int, proc: subprocess.Popen[bytes], timeout: float = 25.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            err = (proc.stderr.read() if proc.stderr else b"").decode(
+                "utf-8", errors="replace"
+            )
+            raise RuntimeError(f"hub_exited:{err[:400]}")
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                return
+        except OSError:
+            time.sleep(0.05)
+    raise RuntimeError("hub_listen_timeout")
+
+
+def _start_hub(
+    *, db: Path, identity: Path, port: int, reply: Path
+) -> subprocess.Popen[bytes]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(_SRC)
+    reply.unlink(missing_ok=True)
+    proc = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "steward_hub.https_runtime",
+            "--database",
+            str(db),
+            "--identity-root",
+            str(identity),
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--shutdown-stdin",
+            "--control-reply",
+            str(reply),
+        ],
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+    )
+    _wait_port(port, proc)
+    return proc
+
+
+def _stop(proc: subprocess.Popen[bytes]) -> bool:
+    if proc.poll() is not None:
+        return proc.returncode == 0
+    if proc.stdin is None:
+        return False
+    try:
+        proc.stdin.write(b"shutdown\n")
+        proc.stdin.flush()
+        return proc.wait(timeout=15) == 0
+    except Exception:  # noqa: BLE001
+        proc.kill()
+        proc.wait(timeout=5)
+        return False
+
+
+def _wait_reply(path: Path, op: str, timeout: float = 10.0) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if path.is_file():
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                time.sleep(0.05)
+                continue
+            if data.get("op") == op:
+                path.unlink(missing_ok=True)
+                return data
+        time.sleep(0.05)
+    raise RuntimeError(f"control_timeout:{op}")
+
+
+def _control(proc: subprocess.Popen[bytes], reply: Path, command: str, op: str) -> dict:
+    assert proc.stdin is not None
+    reply.unlink(missing_ok=True)
+    proc.stdin.write((command + "\n").encode("ascii"))
+    proc.stdin.flush()
+    data = _wait_reply(reply, op)
+    if not data.get("ok"):
+        raise RuntimeError(f"control_failed:{data}")
+    return data
+
+
+def run_smoke() -> dict[str, Any]:
+    # Read-only use of an already-provisioned permanent identity (no provision/
+    # recovery/marker mutation from this smoke).
+    identity = permanent_identity_root()
+    if not identity.exists():
+        return {
+            "status": "FAIL",
+            "error_type": "permanent_identity_missing",
+        }
+    loaded = load_tls_identity(identity)
+    fingerprint = loaded.cert_fingerprint_sha256
+    hub_id = loaded.manifest.hub_id
+    audit = audit_permanent_identity_tree()
+
+    tmp = Path(tempfile.mkdtemp(prefix="b2b-b2-perm-https-"))
+    # Guard: temp db must not live under DataSteward.
+    if "DataSteward" in str(tmp):
+        raise RuntimeError("temp_under_datasteward")
+
+    db1 = tmp / "hub1.sqlite3"
+    db2 = tmp / "hub2.sqlite3"
+    reply = tmp / "control-reply.json"
+    report: dict[str, Any] = {"status": "FAIL"}
+    try:
+        validate_loopback_bind_host("127.0.0.1")
+        try:
+            validate_loopback_bind_host("0.0.0.0")
+            non_loopback_rejected = False
+        except ValueError:
+            non_loopback_rejected = True
+
+        port1 = allocate_loopback_port()
+        hub1 = _start_hub(db=db1, identity=identity, port=port1, reply=reply)
+        try:
+            with PinFirstHttpsClient(
+                host="127.0.0.1",
+                port=port1,
+                expected_fingerprint=fingerprint,
+            ) as client:
+                health = client.get("/health")
+                ott_raw = b"\x61" * 32
+                claim_raw = b"\x62" * 32
+                cred_raw = b"\x63" * 32
+                ott = _b64url(ott_raw)
+                claim = _b64url(claim_raw)
+                cred_digest = hashlib.sha256(cred_raw).hexdigest()
+                ott_digest = hashlib.sha256(ott_raw).hexdigest()
+                created = _control(
+                    hub1,
+                    reply,
+                    f"CREATE_SESSION {ott_digest} 600",
+                    "CREATE_SESSION",
+                )
+                session_id = created["pairing_session_id"]
+                body = {
+                    "protocol_version": PROTOCOL,
+                    "pairing_attempt_id": ATTEMPT,
+                    "pairing_token": ott,
+                    "claim_secret": claim,
+                    "device_credential_digest": cred_digest,
+                    "client_nonce": "AAAAAAAAAAAAAAAAAAAAAA",
+                    "requested_capabilities": ["session.sync"],
+                    "platform": "android",
+                    "display_name": "B2BB2Phone",
+                }
+                h1 = client.post(
+                    f"/v1/pairing/sessions/{session_id}/client_hello",
+                    headers={"content-type": "application/json"},
+                    body=json.dumps(body, separators=(",", ":")).encode("utf-8"),
+                )
+                short_code = h1.json()["short_verification_code"]
+                _control(
+                    hub1,
+                    reply,
+                    f"HUB_CONFIRM {session_id} {ATTEMPT}",
+                    "HUB_CONFIRM",
+                )
+                confirm = client.post(
+                    f"/v1/pairing/sessions/{session_id}/client_confirm",
+                    headers={
+                        "content-type": "application/json",
+                        "authorization": f"Pairing {claim}",
+                        "X-DataSteward-Protocol": PROTOCOL,
+                    },
+                    body=json.dumps(
+                        {
+                            "protocol_version": PROTOCOL,
+                            "pairing_attempt_id": ATTEMPT,
+                            "short_verification_code": short_code,
+                        },
+                        separators=(",", ":"),
+                    ).encode("utf-8"),
+                )
+                active = (
+                    confirm.status_code == 200
+                    and confirm.json().get("credential_status") == "ACTIVE"
+                )
+                health_ok = health.status_code == 200
+        finally:
+            stopped1 = _stop(hub1)
+
+        # Cleanup temp db artifacts before second start.
+        for suffix in ("", "-wal", "-shm"):
+            p = Path(str(db1) + suffix) if suffix else db1
+            p.unlink(missing_ok=True)
+
+        port2 = allocate_loopback_port()
+        hub2 = _start_hub(db=db2, identity=identity, port=port2, reply=reply)
+        wrong_http = -1
+        wrong_attempts = -1
+        try:
+            bad = PinFirstHttpsClient(
+                host="127.0.0.1",
+                port=port2,
+                expected_fingerprint="d" * 64,
+            )
+            try:
+                bad.connect_and_pin()
+            except Exception:
+                pass
+            finally:
+                bad.close()
+            wrong_http = bad.http_requests_sent
+            wrong_attempts = 0
+            if db2.exists():
+                conn = sqlite3.connect(db2)
+                try:
+                    wrong_attempts = int(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM pairing_attempt"
+                        ).fetchone()[0]
+                    )
+                finally:
+                    conn.close()
+            with PinFirstHttpsClient(
+                host="127.0.0.1",
+                port=port2,
+                expected_fingerprint=fingerprint,
+            ) as client2:
+                health2 = client2.get("/health")
+                restart_health = health2.status_code == 200
+        finally:
+            stopped2 = _stop(hub2)
+
+        again = load_tls_identity(identity)
+        hub = identity.parent
+        checks = {
+            "read_only_load": True,
+            "fingerprint_stable": again.cert_fingerprint_sha256 == fingerprint,
+            "health_ok": health_ok,
+            "active": active,
+            "restart_health": restart_health,
+            "wrong_pin_zero_http": wrong_http == 0,
+            "wrong_pin_zero_attempts": wrong_attempts == 0,
+            "non_loopback_rejected": non_loopback_rejected,
+            "hub1_stopped": stopped1,
+            "hub2_stopped": stopped2,
+            "workers_zero": len(list_alive_pairing_worker_threads()) == 0,
+            "owner_marker_zero": not (identity / OWNER_FILENAME).exists(),
+            "transient_siblings_zero": count_transient_siblings(hub) == 0,
+            "audit_ok": audit.get("loader_ok") is True,
+        }
+        report = {
+            "status": "PASS" if all(checks.values()) else "FAIL",
+            "checks": checks,
+            "fingerprint_prefix8": fingerprint[:8],
+            "fingerprint_suffix8": fingerprint[-8:],
+            "fingerprint_evidence_sha256": hashlib.sha256(
+                fingerprint.encode("ascii")
+            ).hexdigest(),
+            "hub_id_evidence_sha256": hashlib.sha256(
+                hub_id.encode("ascii")
+            ).hexdigest(),
+            "path_template": r"%LOCALAPPDATA%\DataSteward\hub\tls-identity-v1",
+            "dacl_categories": audit.get("dacl_categories"),
+            "cryptography_version": __import__("cryptography").__version__,
+        }
+    except Exception as exc:  # noqa: BLE001
+        report = {"status": "FAIL", "error_type": type(exc).__name__}
+    finally:
+        removed = _rmtree_strict(tmp)
+        report["temp_root_removed"] = removed
+        if report.get("status") == "PASS" and not removed:
+            report["status"] = "FAIL"
+    return report
+
+
+def main() -> int:
+    report = run_smoke()
+    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    return 0 if report.get("status") == "PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

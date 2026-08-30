@@ -1,0 +1,30 @@
+// Gradle loads this script from GRADLE_USER_HOME/init.d for every build.
+// Keep it dormant unless the Data Steward build entry point explicitly opts in.
+if (System.getProperty("dataSteward.useGoogleMirror") == "true") {
+    gradle.beforeSettings { settings ->
+        settings.pluginManagement.repositories.maven {
+            name = "AliyunGoogleMirror"
+            url = settings.uri("https://maven.aliyun.com/repository/google")
+        }
+        settings.pluginManagement.repositories.maven {
+            name = "AliyunGradlePluginMirror"
+            url = settings.uri("https://maven.aliyun.com/repository/gradle-plugin")
+        }
+        settings.pluginManagement.repositories.maven {
+            name = "AliyunPublicMirror"
+            url = settings.uri("https://maven.aliyun.com/repository/public")
+        }
+        // Adding the first explicit plugin repository removes Gradle's implicit
+        // Plugin Portal, so retain it as a final fallback.
+        settings.pluginManagement.repositories.gradlePluginPortal()
+
+        settings.dependencyResolutionManagement.repositories.maven {
+            name = "AliyunGoogleMirror"
+            url = settings.uri("https://maven.aliyun.com/repository/google")
+        }
+        settings.dependencyResolutionManagement.repositories.maven {
+            name = "AliyunPublicMirror"
+            url = settings.uri("https://maven.aliyun.com/repository/public")
+        }
+    }
+}
