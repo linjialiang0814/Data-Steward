@@ -29,6 +29,7 @@ Future<SharedSessionController> createSharedSessionController({
   return SharedSessionController(
     config: config,
     cursorStore: store,
+    pageSize: config?.authenticated == true ? 32 : 100,
     transportFactory: (value) => HubSharedSessionTransport(
       value.authenticated
           ? createAuthenticatedHubRestClient(value.activeCredential!)

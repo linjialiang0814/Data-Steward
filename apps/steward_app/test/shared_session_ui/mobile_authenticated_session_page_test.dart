@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:steward_app/app_coordinator/steward_app_coordinator.dart';
 import 'package:steward_app/secure_pairing/pairing_vault.dart';
 import 'package:steward_app/shared_session/hub_websocket_client.dart';
@@ -10,6 +12,7 @@ import 'package:steward_app/shared_session/session_projection.dart';
 import 'package:steward_app/shared_session/shared_session_errors.dart';
 import 'package:steward_app/shared_session_ui/mobile_authenticated_session_page.dart';
 import 'package:steward_app/shared_session_ui/shared_session_controller.dart';
+import 'package:steward_app/shared_session_ui/shared_session_page.dart';
 
 import '../shared_session/test_helpers.dart';
 
@@ -81,6 +84,69 @@ void main() {
     expect(find.text('已恢复安全设备身份'), findsNothing);
 
     await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    coordinator.dispose();
+  });
+
+  testWidgets('service code update starts the recovered session exactly once', (
+    tester,
+  ) async {
+    final vault = _MemoryVault(_credential);
+    var reachable = false;
+    final coordinator = StewardAppCoordinator(
+      vault: vault,
+      authorizationLoader: (credential) async {
+        if (!reachable) throw const TransportException();
+        return _authorizationFor(credential);
+      },
+      endpointDiscovery: null,
+      endpointStabilityDelay: Duration.zero,
+    );
+    await coordinator.initialize();
+    expect(coordinator.state, StewardCredentialState.offline);
+    final startedWith = <ActiveDeviceCredential>[];
+    final scannerController = MobileScannerController(autoStart: false);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: MobileAuthenticatedSessionPage(
+          coordinator: coordinator,
+          scannerController: scannerController,
+          controllerFactory: (credential) async {
+            startedWith.add(credential);
+            return _unconfiguredController();
+          },
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.tap(find.byKey(const Key('c3-open-scanner')));
+    await tester.pump();
+
+    reachable = true;
+    final scanner = tester.widget<MobileScanner>(find.byType(MobileScanner));
+    scanner.onDetect!(
+      BarcodeCapture(
+        barcodes: [
+          Barcode(
+            rawValue: jsonEncode({
+              'protocol_version': 'shared_session_service/1',
+              'hub_id': _credential.hubId,
+              'base_url': 'https://192.168.50.24:9443',
+              'cert_fingerprint': _credential.certFingerprint,
+            }),
+          ),
+        ],
+      ),
+    );
+    await _pumpSessionStart(tester);
+
+    expect(vault.active.baseUrl.host, '192.168.50.24');
+    expect(startedWith, hasLength(1));
+    expect(startedWith.single.baseUrl.host, '192.168.50.24');
+    expect(find.byType(SharedSessionPage), findsOneWidget);
+
+    await tester.pumpWidget(const MaterialApp(home: SizedBox()));
+    scannerController.dispose();
     coordinator.dispose();
   });
 

@@ -47,6 +47,33 @@ void main() {
     await client.close();
   });
 
+  test('connector preserves classified shared-session failures', () async {
+    for (final failure in <SharedSessionException>[
+      const TransportException('auth_unavailable'),
+      const HubApiException(statusCode: 401, code: 'auth_revoked'),
+      const ProtocolIntegrityException(),
+    ]) {
+      final client = HubWebSocketClient(
+        baseUri: Uri.parse('ws://127.0.0.1:8123'),
+        conversationId: 'conversation-1',
+        projection: SessionProjection(conversationId: 'conversation-1'),
+        connector: (_) => Future<HubSocket>.error(failure),
+      );
+
+      await expectLater(
+        client.connect(),
+        throwsA(
+          isA<SharedSessionException>().having(
+            (error) => error.code,
+            'code',
+            failure.code,
+          ),
+        ),
+      );
+      await client.close();
+    }
+  });
+
   test(
     'connecting rejects duplicate connect without second connector',
     () async {

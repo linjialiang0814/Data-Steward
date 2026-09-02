@@ -295,7 +295,7 @@ void main() {
     await _settle(tester);
 
     expect(controller.state, SharedSessionViewState.offline);
-    expect(find.text('更新电脑地址'), findsOneWidget);
+    expect(find.text('扫描服务码更新电脑地址'), findsOneWidget);
     expect(find.text('了解'), findsNothing);
     await tester.tap(find.byKey(const Key('c3-return-to-service-scanner')));
     await tester.pump();
@@ -303,7 +303,7 @@ void main() {
     controller.dispose();
   });
 
-  testWidgets('offline session prefers one credential-preserving retry', (
+  testWidgets('offline session offers retry and service-code recovery', (
     tester,
   ) async {
     final socket = FakeHubSocket();
@@ -335,11 +335,14 @@ void main() {
     expect(controller.safeError, isNull);
     expect(find.textContaining('等待网络稳定'), findsOneWidget);
     expect(find.text('网络稳定后重连'), findsOneWidget);
-    expect(find.text('更新电脑地址'), findsNothing);
+    expect(find.text('扫描服务码更新电脑地址'), findsOneWidget);
     await tester.tap(find.byKey(const Key('s4-retry-established-session')));
     await tester.pump();
     expect(retryCount, 1);
     expect(returned, isFalse);
+    await tester.tap(find.byKey(const Key('c3-return-to-service-scanner')));
+    await tester.pump();
+    expect(returned, isTrue);
     controller.dispose();
   });
 

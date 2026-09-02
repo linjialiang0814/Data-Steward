@@ -168,6 +168,9 @@ final class HubWebSocketClient {
       unawaited(pendingSocket.then(_releaseOrphanSocket, onError: (_) {}));
       _setState(HubWebSocketState.protocolError);
       throw const TransportException();
+    } on SharedSessionException {
+      _setState(HubWebSocketState.protocolError);
+      rethrow;
     } on Object {
       _setState(HubWebSocketState.protocolError);
       throw const TransportException();

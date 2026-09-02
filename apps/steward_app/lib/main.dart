@@ -253,7 +253,7 @@ class _SafRiskPageState extends State<SafRiskPage> {
                     const SizedBox(height: 12),
                     Text('Environment Ready', style: textTheme.bodyMedium),
                     const SizedBox(height: 4),
-                    Text('设备尚未配对', style: textTheme.titleMedium),
+                    Text('SAF 独立验证环境', style: textTheme.titleMedium),
                     const SizedBox(height: 24),
                     Card(
                       child: Padding(

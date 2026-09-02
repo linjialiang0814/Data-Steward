@@ -12,7 +12,7 @@ final class NetworkBoundaryException extends SharedSessionException {
 }
 
 final class TransportException extends SharedSessionException {
-  const TransportException() : super('transport_error');
+  const TransportException([super.code = 'transport_error']);
 }
 
 final class ProtocolIntegrityException extends SharedSessionException {

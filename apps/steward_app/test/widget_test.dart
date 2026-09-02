@@ -16,7 +16,7 @@ void main() {
 
     expect(find.text('Data Steward'), findsWidgets);
     expect(find.text('Environment Ready'), findsOneWidget);
-    expect(find.text('设备尚未配对'), findsOneWidget);
+    expect(find.text('SAF 独立验证环境'), findsOneWidget);
     expect(find.text('Android SAF 风险验证页（非最终产品）'), findsOneWidget);
     expect(find.text('授权状态：未授权'), findsOneWidget);
     expect(actionButton(tester, '写入/覆盖探针').onPressed, isNull);

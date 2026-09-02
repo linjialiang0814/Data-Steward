@@ -241,6 +241,7 @@ final class SharedSessionController implements MemoryCenterController {
     final operation = _beginOperation();
     _safeError = null;
     _setState(SharedSessionViewState.connecting);
+    var startupStage = 'health';
     try {
       final transport = transportFactory(config!);
       if (!_isOperationCurrent(operation)) {
@@ -253,12 +254,15 @@ final class SharedSessionController implements MemoryCenterController {
       if (!health.databaseReady || health.protocolVersion != 1) {
         throw const ProtocolIntegrityException();
       }
+      startupStage = 'conversation';
       await transport.createDemoConversation();
       if (!_isOperationCurrent(operation)) return;
+      startupStage = 'local_cursor';
       final storedCursor = await cursorStore.read(demoConversationId);
       if (!_isOperationCurrent(operation)) return;
       _setState(SharedSessionViewState.replaying);
 
+      startupStage = 'replay';
       final projection = SessionProjection(conversationId: demoConversationId);
       var cursor = 0;
       var pages = 0;
@@ -297,6 +301,7 @@ final class SharedSessionController implements MemoryCenterController {
       _persistedAtStart = storedCursor;
       _projection = projection;
 
+      startupStage = 'realtime';
       final socket = socketFactory(config!, projection);
       if (!_isOperationCurrent(operation)) {
         await socket.close();
@@ -326,7 +331,7 @@ final class SharedSessionController implements MemoryCenterController {
           '应用私有同步状态损坏，必须由用户确认后重置。',
         );
       } else {
-        await _enterProtocolFailure();
+        await _enterProtocolFailure(startupStage);
       }
     } on HubApiException catch (error) {
       if (!_isOperationCurrent(operation)) return;
@@ -338,17 +343,18 @@ final class SharedSessionController implements MemoryCenterController {
           'Hub 拒绝了超前游标，必须由用户确认后重置。',
         );
       } else {
-        await _enterProtocolFailure();
+        await _enterProtocolFailure(startupStage);
       }
-    } on TransportException {
+    } on TransportException catch (error) {
       if (!_isOperationCurrent(operation)) return;
-      await _enterFailure(
-        SharedSessionViewState.offline,
-        'Hub 当前离线，请确认本机 Demo 已启动。',
-      );
+      await _enterFailure(SharedSessionViewState.offline, switch (error.code) {
+        'auth_unavailable' => 'Hub 认证服务暂时不可用；请等待状态稳定后单次重连。',
+        'transient_network' => '无法连接当前电脑地址；请确认同一 Wi-Fi 与本机 Demo 状态。',
+        _ => 'Hub 当前离线，请确认本机 Demo 已启动。',
+      });
     } on Object {
       if (!_isOperationCurrent(operation)) return;
-      await _enterProtocolFailure();
+      await _enterProtocolFailure(startupStage);
     } finally {
       _finishOperation(operation);
     }
@@ -663,8 +669,17 @@ final class SharedSessionController implements MemoryCenterController {
     }
   }
 
-  Future<void> _enterProtocolFailure() =>
-      _enterFailure(SharedSessionViewState.protocolError, '共享会话协议校验失败，已停止发送。');
+  Future<void> _enterProtocolFailure([String? startupStage]) => _enterFailure(
+    SharedSessionViewState.protocolError,
+    switch (startupStage) {
+      'health' => '电脑服务身份或版本校验失败，已停止连接。',
+      'conversation' => '会话建立响应校验失败，已停止连接。',
+      'local_cursor' => '本地会话状态校验失败，已停止连接。',
+      'replay' => '历史消息回放校验失败，已停止连接。',
+      'realtime' => '实时同步通道校验失败，已停止连接。',
+      _ => '共享会话协议校验失败，已停止发送。',
+    },
+  );
 
   Future<void> _enterAuthorizationFailure(String code) => _enterFailure(
     SharedSessionViewState.authorizationChanged,

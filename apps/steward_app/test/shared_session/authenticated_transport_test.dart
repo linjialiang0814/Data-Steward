@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:steward_app/secure_pairing/pairing_errors.dart';
 import 'package:steward_app/secure_pairing/pairing_vault.dart';
 import 'package:steward_app/secure_pairing/pinned_transport.dart';
 import 'package:steward_app/shared_session/authenticated_transport.dart';
@@ -88,6 +89,50 @@ void main() {
       rest.close();
     },
   );
+
+  test('REST adapter preserves transport and integrity failures', () async {
+    for (final scenario in <(SecurePairingException, Matcher)>[
+      (
+        const SecurePairingException(
+          'transient_network',
+          PairingFailureKind.transient,
+        ),
+        isA<TransportException>().having(
+          (value) => value.code,
+          'code',
+          'transient_network',
+        ),
+      ),
+      (
+        const SecurePairingException(
+          'protocol_integrity_error',
+          PairingFailureKind.integrity,
+        ),
+        isA<ProtocolIntegrityException>(),
+      ),
+      (
+        const SecurePairingException(
+          'capability_denied',
+          PairingFailureKind.permanent,
+        ),
+        isA<HubApiException>()
+            .having((value) => value.code, 'code', 'capability_denied')
+            .having((value) => value.statusCode, 'status', 403),
+      ),
+    ]) {
+      final rest = HubRestClient(
+        baseUri: Uri.parse('https://192.168.1.2:9443'),
+        client: PinnedAuthenticatedHttpClient(
+          credential: _credential(),
+          transport: _FakePinnedTransport(failure: scenario.$1),
+        ),
+        authenticatedPrivateLan: true,
+        expectedTransportScope: 'private_lan_authenticated_service',
+      );
+      await expectLater(rest.health(), throwsA(scenario.$2));
+      rest.close();
+    }
+  });
 }
 
 ActiveDeviceCredential _credential() => ActiveDeviceCredential(
@@ -101,9 +146,10 @@ ActiveDeviceCredential _credential() => ActiveDeviceCredential(
 );
 
 final class _FakePinnedTransport implements PairingHttpTransport {
-  _FakePinnedTransport({this.revoked = false});
+  _FakePinnedTransport({this.revoked = false, this.failure});
 
   final bool revoked;
+  final SecurePairingException? failure;
   String? fingerprint;
   Map<String, String> headers = const {};
 
@@ -115,6 +161,7 @@ final class _FakePinnedTransport implements PairingHttpTransport {
     required Map<String, String> headers,
     String? body,
   }) async {
+    if (failure case final value?) throw value;
     fingerprint = expectedFingerprint;
     this.headers = Map<String, String>.of(headers);
     if (revoked) {

@@ -65,6 +65,7 @@ final class MobileAuthenticatedSessionPage extends StatefulWidget {
     this.initialDraft,
     this.initialDraftRevision = 0,
     this.onInitialDraftConsumed,
+    this.scannerController,
   });
 
   final StewardAppCoordinator? coordinator;
@@ -74,6 +75,7 @@ final class MobileAuthenticatedSessionPage extends StatefulWidget {
   final String? initialDraft;
   final int initialDraftRevision;
   final ValueChanged<int>? onInitialDraftConsumed;
+  final MobileScannerController? scannerController;
 
   @override
   State<MobileAuthenticatedSessionPage> createState() =>
@@ -225,9 +227,9 @@ final class _MobileAuthenticatedSessionPageState
   Future<void> _acceptDescriptor(String source) async {
     if (_busy || _scanAccepted || source.trim().isEmpty) return;
     _scanAccepted = true;
+    var endpointUpdated = false;
     setState(() {
       _busy = true;
-      _scannerVisible = false;
       _error = null;
     });
     try {
@@ -245,9 +247,14 @@ final class _MobileAuthenticatedSessionPageState
         baseUrl: descriptor.baseUrl,
         certFingerprint: descriptor.certFingerprint,
       );
+      endpointUpdated = true;
+      if (mounted) setState(() => _scannerVisible = false);
     } on Object {
       if (mounted) {
-        setState(() => _error = '服务码无效，或与已配对电脑身份不一致。');
+        setState(() {
+          _scannerVisible = true;
+          _error = '服务码无效、电脑不可达，或与已配对电脑身份不一致。';
+        });
       }
     } finally {
       if (mounted) {
@@ -255,6 +262,7 @@ final class _MobileAuthenticatedSessionPageState
           _busy = false;
           _scanAccepted = false;
         });
+        if (endpointUpdated) _scheduleSessionStart();
       }
     }
   }
@@ -386,6 +394,7 @@ final class _MobileAuthenticatedSessionPageState
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(16),
                 child: MobileScanner(
+                  controller: widget.scannerController,
                   onDetect: (capture) {
                     for (final barcode in capture.barcodes) {
                       final value = barcode.rawValue;

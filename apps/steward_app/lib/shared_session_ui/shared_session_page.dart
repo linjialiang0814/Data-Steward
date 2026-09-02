@@ -518,16 +518,14 @@ final class _SharedSessionPageState extends State<SharedSessionPage> {
         label: const Text('网络稳定后重连'),
       ),
     if (_canReturnToServiceScanner(controller.state) &&
-        widget.onReturnToServiceScanner != null &&
-        (!_canRetrySameEndpoint(controller.state) ||
-            widget.onRetryConnection == null))
+        widget.onReturnToServiceScanner != null)
       TextButton(
         key: const Key('c3-return-to-service-scanner'),
         onPressed: widget.onReturnToServiceScanner,
         child: Text(
           controller.state == SharedSessionViewState.authorizationChanged
               ? '重新安全配对'
-              : '更新电脑地址',
+              : '扫描服务码更新电脑地址',
         ),
       ),
     if (controller.state == SharedSessionViewState.cursorAhead ||
